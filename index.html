@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>质检表 Match 转 命中</title>
+    <style>
+      :root {
+        --bg: linear-gradient(135deg, #f7f3ea 0%, #e4efe9 100%);
+        --panel: rgba(255, 255, 255, 0.9);
+        --text: #1d2a24;
+        --muted: #5f6f67;
+        --accent: #0e8f6f;
+        --accent-dark: #0b6d55;
+        --border: rgba(13, 68, 54, 0.14);
+        --shadow: 0 18px 60px rgba(17, 45, 36, 0.12);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+        color: var(--text);
+        background: var(--bg);
+      }
+
+      .shell {
+        width: min(920px, calc(100vw - 32px));
+        margin: 40px auto;
+        padding: 32px;
+        border: 1px solid var(--border);
+        border-radius: 28px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(14px);
+      }
+
+      h1 {
+        margin: 0 0 12px;
+        font-size: clamp(28px, 4vw, 42px);
+        line-height: 1.1;
+      }
+
+      p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.7;
+      }
+
+      .card {
+        margin-top: 28px;
+        padding: 24px;
+        border-radius: 22px;
+        background: #fcfffd;
+        border: 1px solid var(--border);
+      }
+
+      .dropzone {
+        display: grid;
+        gap: 14px;
+        justify-items: center;
+        padding: 36px 20px;
+        border: 2px dashed rgba(14, 143, 111, 0.32);
+        border-radius: 20px;
+        text-align: center;
+        background:
+          radial-gradient(circle at top, rgba(14, 143, 111, 0.08), transparent 45%),
+          #f8fffc;
+      }
+
+      .dropzone.dragging {
+        border-color: var(--accent);
+        background:
+          radial-gradient(circle at top, rgba(14, 143, 111, 0.16), transparent 52%),
+          #f2fffa;
+      }
+
+      .button-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 20px;
+      }
+
+      .btn,
+      .file-label {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 48px;
+        padding: 0 18px;
+        border-radius: 999px;
+        border: 1px solid transparent;
+        font-size: 15px;
+        cursor: pointer;
+        transition: transform 160ms ease, background 160ms ease, border-color 160ms ease;
+      }
+
+      .btn {
+        background: var(--accent);
+        color: #fff;
+      }
+
+      .btn:hover {
+        transform: translateY(-1px);
+        background: var(--accent-dark);
+      }
+
+      .btn:disabled {
+        cursor: not-allowed;
+        opacity: 0.45;
+        transform: none;
+      }
+
+      .file-label {
+        background: #fff;
+        border-color: var(--border);
+        color: var(--text);
+      }
+
+      input[type="file"] {
+        display: none;
+      }
+
+      .status {
+        margin-top: 18px;
+        padding: 16px 18px;
+        border-radius: 16px;
+        background: #f4fbf8;
+        color: var(--text);
+        white-space: pre-wrap;
+        line-height: 1.65;
+      }
+
+      .meta {
+        margin-top: 16px;
+        display: grid;
+        gap: 10px;
+      }
+
+      .meta-item {
+        padding: 14px 16px;
+        border-radius: 16px;
+        background: #fff;
+        border: 1px solid var(--border);
+      }
+
+      .meta-item strong {
+        display: block;
+        margin-bottom: 6px;
+      }
+
+      @media (max-width: 640px) {
+        .shell {
+          margin: 20px auto;
+          padding: 20px;
+          border-radius: 22px;
+        }
+
+        .card {
+          padding: 18px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <h1>质检结果一键业务化</h1>
+      <p>上传原始 Excel 后，网页会自动把命中类单元格从 <code>match</code> 或 <code>{"_match": true}</code> 转成“命中”，并下载新的结果文件。</p>
+
+      <section class="card">
+        <div id="dropzone" class="dropzone">
+          <div>
+            <strong>拖拽 Excel 到这里</strong>
+            <p>支持 `.xlsx`，仅在浏览器本地处理，不上传到服务器。</p>
+          </div>
+          <div class="button-row">
+            <label class="file-label" for="fileInput">选择原始表格</label>
+            <button id="convertBtn" class="btn" disabled>转换并下载</button>
+          </div>
+          <input id="fileInput" type="file" accept=".xlsx" />
+        </div>
+
+        <div id="status" class="status">等待上传文件。</div>
+        <div id="meta" class="meta"></div>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script>
+      const fileInput = document.getElementById("fileInput");
+      const convertBtn = document.getElementById("convertBtn");
+      const statusBox = document.getElementById("status");
+      const metaBox = document.getElementById("meta");
+      const dropzone = document.getElementById("dropzone");
+
+      let selectedFile = null;
+
+      function setStatus(message) {
+        statusBox.textContent = message;
+      }
+
+      function isMatchCell(value) {
+        if (typeof value !== "string") {
+          return false;
+        }
+
+        const text = value.trim();
+        if (text.toLowerCase() === "match") {
+          return true;
+        }
+
+        try {
+          const parsed = JSON.parse(text);
+          return parsed && parsed._match === true;
+        } catch {
+          return false;
+        }
+      }
+
+      function renderMeta(items) {
+        metaBox.innerHTML = "";
+        items.forEach((item) => {
+          const div = document.createElement("div");
+          div.className = "meta-item";
+          div.innerHTML = `<strong>${item.title}</strong><span>${item.body}</span>`;
+          metaBox.appendChild(div);
+        });
+      }
+
+      function handleFile(file) {
+        selectedFile = file || null;
+        convertBtn.disabled = !selectedFile;
+        if (!selectedFile) {
+          setStatus("等待上传文件。");
+          metaBox.innerHTML = "";
+          return;
+        }
+
+        setStatus(`已选择文件：${selectedFile.name}`);
+        renderMeta([
+          { title: "处理规则", body: "值为 match 的单元格替换为“命中”；值为 JSON 且 _match 为 true 的单元格也替换为“命中”。" },
+          { title: "输出文件名", body: selectedFile.name.replace(/\.xlsx$/i, "") + "_业务版.xlsx" },
+        ]);
+      }
+
+      async function convertWorkbook() {
+        if (!selectedFile) {
+          return;
+        }
+
+        setStatus("正在解析工作簿，请稍候…");
+        const buffer = await selectedFile.arrayBuffer();
+        const workbook = XLSX.read(buffer, { type: "array" });
+        const summary = [];
+        let total = 0;
+
+        workbook.SheetNames.forEach((sheetName) => {
+          const sheet = workbook.Sheets[sheetName];
+          const range = XLSX.utils.decode_range(sheet["!ref"] || "A1:A1");
+          let sheetCount = 0;
+
+          for (let row = range.s.r; row <= range.e.r; row += 1) {
+            for (let col = range.s.c; col <= range.e.c; col += 1) {
+              const address = XLSX.utils.encode_cell({ r: row, c: col });
+              const cell = sheet[address];
+              if (!cell || !isMatchCell(cell.v)) {
+                continue;
+              }
+
+              cell.v = "命中";
+              cell.t = "s";
+              delete cell.w;
+              delete cell.f;
+              sheetCount += 1;
+              total += 1;
+            }
+          }
+
+          summary.push(`${sheetName}：${sheetCount} 个单元格`);
+        });
+
+        const outputName = selectedFile.name.replace(/\.xlsx$/i, "") + "_业务版.xlsx";
+        XLSX.writeFile(workbook, outputName);
+        setStatus(`处理完成，已下载：${outputName}\n总替换数：${total}`);
+        renderMeta(summary.map((line) => ({ title: "工作表结果", body: line })));
+      }
+
+      fileInput.addEventListener("change", (event) => {
+        handleFile(event.target.files[0]);
+      });
+
+      convertBtn.addEventListener("click", () => {
+        convertWorkbook().catch((error) => {
+          console.error(error);
+          setStatus(`处理失败：${error.message}`);
+        });
+      });
+
+      ["dragenter", "dragover"].forEach((eventName) => {
+        dropzone.addEventListener(eventName, (event) => {
+          event.preventDefault();
+          dropzone.classList.add("dragging");
+        });
+      });
+
+      ["dragleave", "drop"].forEach((eventName) => {
+        dropzone.addEventListener(eventName, (event) => {
+          event.preventDefault();
+          dropzone.classList.remove("dragging");
+        });
+      });
+
+      dropzone.addEventListener("drop", (event) => {
+        const [file] = event.dataTransfer.files;
+        if (file) {
+          fileInput.files = event.dataTransfer.files;
+          handleFile(file);
+        }
+      });
+    </script>
+  </body>
+</html>
