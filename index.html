@@ -316,16 +316,51 @@
         return widths;
       }
 
+      function isBlankCell(cell) {
+        return !cell || cell.v === undefined || cell.v === null || String(cell.v).trim() === "";
+      }
+
+      function shouldTreatAsResultHeader(value) {
+        if (typeof value !== "string") {
+          return false;
+        }
+
+        const text = value.trim();
+        return /质检|命中|结果|是否/.test(text);
+      }
+
       function beautifySheet(sheet) {
         const range = XLSX.utils.decode_range(sheet["!ref"] || "A1:A1");
+        const resultColumns = new Set();
         let hitCount = 0;
         let missCount = 0;
         let renamedCount = 0;
 
+        for (let col = range.s.c; col <= range.e.c; col += 1) {
+          const headerAddress = XLSX.utils.encode_cell({ r: range.s.r, c: col });
+          if (shouldTreatAsResultHeader(sheet[headerAddress]?.v)) {
+            resultColumns.add(col);
+            continue;
+          }
+
+          for (let row = range.s.r + 1; row <= range.e.r; row += 1) {
+            const address = XLSX.utils.encode_cell({ r: row, c: col });
+            if (getResultState(sheet[address]?.v)) {
+              resultColumns.add(col);
+              break;
+            }
+          }
+        }
+
         for (let row = range.s.r; row <= range.e.r; row += 1) {
           for (let col = range.s.c; col <= range.e.c; col += 1) {
             const address = XLSX.utils.encode_cell({ r: row, c: col });
-            const cell = sheet[address];
+            let cell = sheet[address];
+            if (row > range.s.r && resultColumns.has(col) && isBlankCell(cell)) {
+              cell = { t: "s", v: "未命中" };
+              sheet[address] = cell;
+            }
+
             if (!cell) {
               continue;
             }
