@@ -170,7 +170,7 @@
   <body>
     <main class="shell">
       <h1>质检结果一键业务化</h1>
-      <p>上传原始 Excel 后，网页会自动把命中类单元格从 <code>match</code> 或 <code>{"_match": true}</code> 转成“命中”，并下载新的结果文件。</p>
+      <p>上传原始 Excel 后，网页会自动把质检结果转成“命中 / 未命中”，将“用户名称”列改为“任务id”，并下载带样式的结果文件。</p>
 
       <section class="card">
         <div id="dropzone" class="dropzone">
@@ -190,7 +190,7 @@
       </section>
     </main>
 
-    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
     <script>
       const fileInput = document.getElementById("fileInput");
       const convertBtn = document.getElementById("convertBtn");
@@ -204,22 +204,170 @@
         statusBox.textContent = message;
       }
 
-      function isMatchCell(value) {
+      const HEADER_ALIASES = new Map([
+        ["用户名称", "任务id"],
+        ["用户姓名", "任务id"],
+      ]);
+
+      const styles = {
+        header: {
+          font: { bold: true, color: { rgb: "FFFFFF" } },
+          fill: { fgColor: { rgb: "1F6F5B" } },
+          alignment: { horizontal: "center", vertical: "center", wrapText: true },
+          border: {
+            top: { style: "thin", color: { rgb: "D8E5DF" } },
+            bottom: { style: "thin", color: { rgb: "D8E5DF" } },
+            left: { style: "thin", color: { rgb: "D8E5DF" } },
+            right: { style: "thin", color: { rgb: "D8E5DF" } },
+          },
+        },
+        body: {
+          alignment: { vertical: "center", wrapText: true },
+          border: {
+            top: { style: "thin", color: { rgb: "DDE8E3" } },
+            bottom: { style: "thin", color: { rgb: "DDE8E3" } },
+            left: { style: "thin", color: { rgb: "DDE8E3" } },
+            right: { style: "thin", color: { rgb: "DDE8E3" } },
+          },
+        },
+        hit: {
+          font: { bold: true, color: { rgb: "116149" } },
+          fill: { fgColor: { rgb: "DDF7EC" } },
+          alignment: { horizontal: "center", vertical: "center", wrapText: true },
+          border: {
+            top: { style: "thin", color: { rgb: "A9DAC8" } },
+            bottom: { style: "thin", color: { rgb: "A9DAC8" } },
+            left: { style: "thin", color: { rgb: "A9DAC8" } },
+            right: { style: "thin", color: { rgb: "A9DAC8" } },
+          },
+        },
+        miss: {
+          font: { bold: true, color: { rgb: "A11313" } },
+          fill: { fgColor: { rgb: "FFE3E3" } },
+          alignment: { horizontal: "center", vertical: "center", wrapText: true },
+          border: {
+            top: { style: "thin", color: { rgb: "F2B5B5" } },
+            bottom: { style: "thin", color: { rgb: "F2B5B5" } },
+            left: { style: "thin", color: { rgb: "F2B5B5" } },
+            right: { style: "thin", color: { rgb: "F2B5B5" } },
+          },
+        },
+        zebra: {
+          fill: { fgColor: { rgb: "F8FBFA" } },
+          alignment: { vertical: "center", wrapText: true },
+          border: {
+            top: { style: "thin", color: { rgb: "DDE8E3" } },
+            bottom: { style: "thin", color: { rgb: "DDE8E3" } },
+            left: { style: "thin", color: { rgb: "DDE8E3" } },
+            right: { style: "thin", color: { rgb: "DDE8E3" } },
+          },
+        },
+      };
+
+      function normalizeHeader(value) {
         if (typeof value !== "string") {
-          return false;
+          return value;
+        }
+
+        return HEADER_ALIASES.get(value.trim()) || value;
+      }
+
+      function getResultState(value) {
+        if (typeof value !== "string") {
+          return null;
         }
 
         const text = value.trim();
         if (text.toLowerCase() === "match") {
-          return true;
+          return "hit";
+        }
+
+        if (["未命中", "not_match", "no_match", "nomatch", "mismatch", "false"].includes(text.toLowerCase())) {
+          return "miss";
         }
 
         try {
           const parsed = JSON.parse(text);
-          return parsed && parsed._match === true;
+          if (parsed && parsed._match === true) {
+            return "hit";
+          }
+          if (parsed && parsed._match === false) {
+            return "miss";
+          }
         } catch {
-          return false;
+          return null;
         }
+
+        return null;
+      }
+
+      function getColumnWidths(sheet, range) {
+        const widths = [];
+        for (let col = range.s.c; col <= range.e.c; col += 1) {
+          let width = 10;
+          for (let row = range.s.r; row <= range.e.r; row += 1) {
+            const address = XLSX.utils.encode_cell({ r: row, c: col });
+            const value = sheet[address]?.v;
+            const text = value === undefined || value === null ? "" : String(value);
+            width = Math.max(width, Math.min(36, text.length + 4));
+          }
+          widths.push({ wch: width });
+        }
+        return widths;
+      }
+
+      function beautifySheet(sheet) {
+        const range = XLSX.utils.decode_range(sheet["!ref"] || "A1:A1");
+        let hitCount = 0;
+        let missCount = 0;
+        let renamedCount = 0;
+
+        for (let row = range.s.r; row <= range.e.r; row += 1) {
+          for (let col = range.s.c; col <= range.e.c; col += 1) {
+            const address = XLSX.utils.encode_cell({ r: row, c: col });
+            const cell = sheet[address];
+            if (!cell) {
+              continue;
+            }
+
+            if (row === range.s.r) {
+              const normalized = normalizeHeader(cell.v);
+              if (normalized !== cell.v) {
+                cell.v = normalized;
+                renamedCount += 1;
+              }
+              cell.t = "s";
+              cell.s = styles.header;
+              continue;
+            }
+
+            const state = getResultState(cell.v);
+            if (state === "hit") {
+              cell.v = "命中";
+              cell.t = "s";
+              cell.s = styles.hit;
+              hitCount += 1;
+              continue;
+            }
+
+            if (state === "miss") {
+              cell.v = "未命中";
+              cell.t = "s";
+              cell.s = styles.miss;
+              missCount += 1;
+              continue;
+            }
+
+            cell.s = row % 2 === 0 ? styles.zebra : styles.body;
+          }
+        }
+
+        sheet["!cols"] = getColumnWidths(sheet, range);
+        sheet["!rows"] = [{ hpt: 24 }];
+        sheet["!autofilter"] = { ref: XLSX.utils.encode_range(range) };
+        sheet["!freeze"] = { xSplit: 0, ySplit: 1 };
+
+        return { hitCount, missCount, renamedCount };
       }
 
       function renderMeta(items) {
@@ -243,7 +391,7 @@
 
         setStatus(`已选择文件：${selectedFile.name}`);
         renderMeta([
-          { title: "处理规则", body: "值为 match 的单元格替换为“命中”；值为 JSON 且 _match 为 true 的单元格也替换为“命中”。" },
+          { title: "处理规则", body: "命中结果显示为“命中”；未命中结果显示为红色“未命中”；表头“用户名称”改为“任务id”。" },
           { title: "输出文件名", body: selectedFile.name.replace(/\.xlsx$/i, "") + "_业务版.xlsx" },
         ]);
       }
@@ -257,36 +405,22 @@
         const buffer = await selectedFile.arrayBuffer();
         const workbook = XLSX.read(buffer, { type: "array" });
         const summary = [];
-        let total = 0;
+        let totalHits = 0;
+        let totalMisses = 0;
+        let totalRenamed = 0;
 
         workbook.SheetNames.forEach((sheetName) => {
           const sheet = workbook.Sheets[sheetName];
-          const range = XLSX.utils.decode_range(sheet["!ref"] || "A1:A1");
-          let sheetCount = 0;
-
-          for (let row = range.s.r; row <= range.e.r; row += 1) {
-            for (let col = range.s.c; col <= range.e.c; col += 1) {
-              const address = XLSX.utils.encode_cell({ r: row, c: col });
-              const cell = sheet[address];
-              if (!cell || !isMatchCell(cell.v)) {
-                continue;
-              }
-
-              cell.v = "命中";
-              cell.t = "s";
-              delete cell.w;
-              delete cell.f;
-              sheetCount += 1;
-              total += 1;
-            }
-          }
-
-          summary.push(`${sheetName}：${sheetCount} 个单元格`);
+          const result = beautifySheet(sheet);
+          totalHits += result.hitCount;
+          totalMisses += result.missCount;
+          totalRenamed += result.renamedCount;
+          summary.push(`${sheetName}：命中 ${result.hitCount}，未命中 ${result.missCount}`);
         });
 
         const outputName = selectedFile.name.replace(/\.xlsx$/i, "") + "_业务版.xlsx";
-        XLSX.writeFile(workbook, outputName);
-        setStatus(`处理完成，已下载：${outputName}\n总替换数：${total}`);
+        XLSX.writeFile(workbook, outputName, { cellStyles: true });
+        setStatus(`处理完成，已下载：${outputName}\n命中：${totalHits}\n未命中：${totalMisses}\n表头改名：${totalRenamed}`);
         renderMeta(summary.map((line) => ({ title: "工作表结果", body: line })));
       }
 
